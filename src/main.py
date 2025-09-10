@@ -33,6 +33,29 @@ CURRENCY_NAMES_RU = {
 }
 
 
+class LockedLineEdit(QLineEdit):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        text = event.text()
+        allowed_keys = {
+            Qt.Key_0, Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4,
+            Qt.Key_5, Qt.Key_6, Qt.Key_7, Qt.Key_8, Qt.Key_9,
+            Qt.Key_Plus, Qt.Key_Minus, Qt.Key_Asterisk, Qt.Key_Slash,
+            Qt.Key_Period, Qt.Key_Comma,
+            Qt.Key_Backspace, Qt.Key_Delete,
+            Qt.Key_Left, Qt.Key_Right, Qt.Key_Home, Qt.Key_End,
+            Qt.Key_Return, Qt.Key_Enter
+        }
+        if key in allowed_keys:
+            super().keyPressEvent(event)
+        else:
+            event.ignore()
+
+
 class CurrencyCalculator(QWidget):
     def __init__(self):
         super().__init__()
@@ -66,12 +89,11 @@ class CurrencyCalculator(QWidget):
             combo.setFixedHeight(60)
             combo.setStyleSheet("font-size: 11pt; padding: 2px;")
 
-            edit = QLineEdit("0")
+            edit = LockedLineEdit("0")
             edit.setAlignment(Qt.AlignRight)
             edit.setFixedHeight(60)
-            edit.setStyleSheet("font-size: 14pt;")
+            edit.setStyleSheet("font-size: 18pt;")
             edit.setFocusPolicy(Qt.ClickFocus)
-            edit.installEventFilter(self)
 
             edit.textChanged.connect(lambda _, e=edit: self.on_value_change(e))
             combo.currentIndexChanged.connect(lambda _, e=edit, c=combo: self.on_currency_change(c, e))
@@ -84,7 +106,8 @@ class CurrencyCalculator(QWidget):
             self.layout.addLayout(row)
             self.currency_rows.append((combo, edit))
 
-        buttons = [
+        self.buttons = {}
+        buttons_layouts = [
             ["C", "⌫", "%", "/"],
             ["7", "8", "9", "*"],
             ["4", "5", "6", "-"],
@@ -92,14 +115,15 @@ class CurrencyCalculator(QWidget):
             ["00", "0", ".", "="]
         ]
 
-        for row in buttons:
+        for row in buttons_layouts:
             hbox = QHBoxLayout()
             for btn_text in row:
                 btn = QPushButton(btn_text)
                 btn.setFixedSize(80, 60)
-                btn.setStyleSheet("font-size: 12pt;")
+                btn.setStyleSheet("font-size: 14pt;")
                 btn.setFocusPolicy(Qt.NoFocus)
                 btn.clicked.connect(lambda _, t=btn_text: self.on_button_click(t))
+                self.buttons[btn_text] = btn
                 hbox.addWidget(btn)
             self.layout.addLayout(hbox)
 
@@ -197,9 +221,13 @@ class CurrencyCalculator(QWidget):
 
         if text == "C":
             focused_edit.setText("0")
+            self.update_button_states("")
         elif text == "⌫":
-            new_val = current[:-1] if current else ""
-            focused_edit.setText(new_val if new_val else "0")
+            if current and current != "0":
+                new_text = current[:-1]
+                focused_edit.setText(new_text if new_text else "0")
+            else:
+                focused_edit.setText("0")
         elif text == "=":
             try:
                 result = str(eval(current))
@@ -207,12 +235,81 @@ class CurrencyCalculator(QWidget):
                 self.on_value_change(focused_edit)
             except Exception:
                 focused_edit.setText("Ошибка")
+            self.update_button_states("")
         else:
             if current == "0" and text.isdigit():
-                focused_edit.setText(text)
+                new_val = text
             else:
-                focused_edit.setText(current + text)
+                new_val = current + text
+            focused_edit.setText(new_val)
+            self.update_button_states(text)
 
+    def update_button_states(self, last_input: str):
+        import re
+        for btn in self.buttons.values():
+            btn.setEnabled(True)
+
+        operators = {"+", "-", "*", "/", "%"}
+        active_edit = None
+        for _, edit in self.currency_rows:
+            if edit.hasFocus():
+                active_edit = edit
+                break
+        if active_edit is None:
+            active_edit = self.last_focused_edit
+
+        current_text = active_edit.text() if active_edit else ""
+        prospective = current_text
+        if last_input in self.buttons:
+            btn = last_input
+
+            if btn == "⌫":
+                prospective = current_text[:-1] if current_text else ""
+            elif btn == "C":
+                prospective = ""
+            elif btn == "00":
+                if current_text == "0":
+                    prospective = "00"
+                else:
+                    prospective = current_text + "00"
+            else:
+                if current_text == "0" and (btn.isdigit() or btn == "00"):
+                    prospective = btn
+                else:
+                    prospective = current_text + btn
+        else:
+            if last_input is not None and last_input != "":
+                prospective = last_input
+
+        prospective = prospective or ""
+        prospective = prospective.strip()
+
+        if not prospective:
+            return
+
+        last_char = prospective[-1]
+
+        if last_char in operators:
+            for sym in operators.union({"."}):
+                if sym in self.buttons:
+                    self.buttons[sym].setEnabled(False)
+            return
+
+        if last_char == ".":
+            if "." in self.buttons:
+                self.buttons["."].setEnabled(False)
+            for op in operators:
+                if op in self.buttons:
+                    self.buttons[op].setEnabled(False)
+            return
+
+
+        parts = re.split(r"[+\-*/%]", prospective)
+        last_number = parts[-1] if parts else ""
+
+        if "." in last_number:
+            if "." in self.buttons:
+                self.buttons["."].setEnabled(False)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
