@@ -2,12 +2,15 @@ import sys
 import requests
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
-    QComboBox, QPushButton
+    QComboBox, QPushButton, QMessageBox
 )
 from PyQt5.QtCore import Qt, QEvent
 
-API_KEY = "60673bf6534faf5107032818a95486d0"
-API_URL = f"http://api.currencylayer.com/live?access_key={API_KEY}"
+API_KEYS = [
+    "60673bf6534faf5107032818a95486d0",
+    "a012765c9af8561af6bbf793e71336a8",
+    "4fc6647c9cec3d28cc33ea5b22056f07"
+]
 
 CURRENCY_NAMES_RU = {
     "USD": "Доллар США",
@@ -31,6 +34,39 @@ CURRENCY_NAMES_RU = {
     "TRY": "Турецкая лира",
     "MXN": "Мексиканское песо",
 }
+
+
+def test_api_key(api_key):
+    try:
+        api_url = f"http://api.currencylayer.com/live?access_key={api_key}"
+        response = requests.get(api_url, timeout=10)
+        data = response.json()
+
+        if data.get("success"):
+            return True, data
+        else:
+            error_info = data.get("error", {}).get("info", "Неизвестная ошибка API")
+            return False, error_info
+
+    except requests.exceptions.Timeout:
+        return False, "Таймаут подключения к API"
+    except requests.exceptions.ConnectionError:
+        return False, "Ошибка подключения к интернету"
+    except requests.exceptions.RequestException as e:
+        return False, f"Ошибка запроса: {str(e)}"
+    except Exception as e:
+        return False, f"Неожиданная ошибка: {str(e)}"
+
+
+def get_working_api_key(keys_list):
+    for api_key in keys_list:
+        is_working, result = test_api_key(api_key)
+        if is_working:
+            print(f"Используется API ключ: {api_key}")
+            return api_key, result
+
+    print("Все ключи не работают")
+    return None, None
 
 
 class LockedLineEdit(QLineEdit):
@@ -71,7 +107,16 @@ class CurrencyCalculator(QWidget):
 
         self.last_focused_edit = None
         self._initializing = True
-        self.rates = self.get_rates()
+
+        # Получаем рабочий API ключ и данные
+        self.api_key, api_data = get_working_api_key(API_KEYS)
+        if self.api_key is None:
+            QMessageBox.warning(self, "Предупреждение",
+                                "Не удалось подключиться к сервису валют.\n"
+                                "Используются резервные курсы валют.")
+            self.rates = self.get_fallback_rates()
+        else:
+            self.rates = self.process_rates(api_data)
 
         self.layout = QVBoxLayout()
         self.layout.setSpacing(0)
@@ -104,6 +149,7 @@ class CurrencyCalculator(QWidget):
             edit.setFixedHeight(60)
             edit.setStyleSheet("font-size: 18pt;")
             edit.setFocusPolicy(Qt.ClickFocus)
+            edit.installEventFilter(self)
 
             edit.textChanged.connect(lambda text, e=edit: self.on_value_change(e, text))
             combo.currentIndexChanged.connect(lambda _, e=edit, c=combo: self.on_currency_change(c, e))
@@ -138,6 +184,9 @@ class CurrencyCalculator(QWidget):
             self.layout.addLayout(hbox)
 
         self.setLayout(self.layout)
+
+        self.update_combo_availability()
+
         self._initializing = False
 
         if self.currency_rows:
@@ -146,20 +195,31 @@ class CurrencyCalculator(QWidget):
             self.last_focused_edit = first_edit
             first_edit.setCursorPosition(len(first_edit.text()))
 
-    def get_rates(self):
-        try:
-            response = requests.get(API_URL, timeout=5)
-            data = response.json()
-            if not data.get("success"):
-                raise Exception(data.get("error", {}).get("info", "Ошибка API"))
-            rates = data["quotes"]
-            result = {"USD": 1.0}
-            for k, v in rates.items():
-                result[k[3:]] = v
-            return result
-        except Exception as e:
-            print("Ошибка загрузки курсов:", e)
-            return {"USD": 1.0, "RUB": 90.0, "KZT": 500.0, "EUR": 0.92}
+    def get_fallback_rates(self):
+        return {
+            "USD": 1.0,
+            "RUB": 90.0,
+            "KZT": 500.0,
+            "EUR": 0.92,
+            "GBP": 0.79,
+            "JPY": 150.0,
+            "CNY": 7.2
+        }
+
+    def process_rates(self, api_data):
+        if not api_data or "quotes" not in api_data:
+            return self.get_fallback_rates()
+
+        rates = api_data["quotes"]
+        result = {"USD": 1.0}
+        for k, v in rates.items():
+            result[k[3:]] = v
+
+        for currency in ["RUB", "KZT", "EUR"]:
+            if currency not in result:
+                result[currency] = self.get_fallback_rates().get(currency, 1.0)
+
+        return result
 
     def format_number(self, num: float) -> str:
         return ("{:.3f}".format(num)).rstrip("0").rstrip(".")
@@ -181,11 +241,10 @@ class CurrencyCalculator(QWidget):
 
             for i in range(combo.count()):
                 item_data = combo.itemData(i)
-                item_enabled = item_data not in selected_currencies or item_data == current_data
+                item_enabled = (item_data not in selected_currencies) or (item_data == current_data)
                 combo.model().item(i).setEnabled(item_enabled)
 
-
-            if combo != changed_combo and not combo.model().item(current_index).isEnabled():
+            if not combo.model().item(current_index).isEnabled():
                 for i in range(combo.count()):
                     if combo.model().item(i).isEnabled():
                         combo.setCurrentIndex(i)
@@ -235,7 +294,6 @@ class CurrencyCalculator(QWidget):
     def eventFilter(self, obj, event):
         if event.type() == QEvent.FocusIn and isinstance(obj, QLineEdit):
             self.last_focused_edit = obj
-            self.on_value_change(obj)
         return super().eventFilter(obj, event)
 
     def on_value_change(self, edited_field, text=None):
