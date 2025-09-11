@@ -34,9 +34,9 @@ CURRENCY_NAMES_RU = {
 
 
 class LockedLineEdit(QLineEdit):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_calculator = parent
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -50,6 +50,13 @@ class LockedLineEdit(QLineEdit):
             Qt.Key_Left, Qt.Key_Right, Qt.Key_Home, Qt.Key_End,
             Qt.Key_Return, Qt.Key_Enter
         }
+
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            if self.parent_calculator:
+                self.parent_calculator.on_button_click("=")
+            event.accept()
+            return
+
         if key in allowed_keys:
             super().keyPressEvent(event)
         else:
@@ -77,6 +84,8 @@ class CurrencyCalculator(QWidget):
             row.setSpacing(5)
 
             combo = QComboBox()
+            combo.currentIndexChanged.connect(self.on_currency_selection_change)
+
             for code in sorted(self.rates.keys()):
                 display = f"{CURRENCY_NAMES_RU.get(code, code)} ({code})"
                 combo.addItem(display, code)
@@ -89,13 +98,14 @@ class CurrencyCalculator(QWidget):
             combo.setFixedHeight(60)
             combo.setStyleSheet("font-size: 11pt; padding: 2px;")
 
-            edit = LockedLineEdit("0")
+            edit = LockedLineEdit(self)
+            edit.setText("0")
             edit.setAlignment(Qt.AlignRight)
             edit.setFixedHeight(60)
             edit.setStyleSheet("font-size: 18pt;")
             edit.setFocusPolicy(Qt.ClickFocus)
 
-            edit.textChanged.connect(lambda _, e=edit: self.on_value_change(e))
+            edit.textChanged.connect(lambda text, e=edit: self.on_value_change(e, text))
             combo.currentIndexChanged.connect(lambda _, e=edit, c=combo: self.on_currency_change(c, e))
 
             row.addWidget(combo)
@@ -110,7 +120,7 @@ class CurrencyCalculator(QWidget):
         buttons_layouts = [
             ["C", "⌫", "%", "/"],
             ["7", "8", "9", "*"],
-            ["4", "5", "6", "-"],
+            ["2", "5", "6", "-"],
             ["1", "2", "3", "+"],
             ["00", "0", ".", "="]
         ]
@@ -154,23 +164,105 @@ class CurrencyCalculator(QWidget):
     def format_number(self, num: float) -> str:
         return ("{:.3f}".format(num)).rstrip("0").rstrip(".")
 
+    def get_selected_currencies(self):
+        selected = []
+        for combo, _ in self.currency_rows:
+            selected.append(combo.currentData())
+        return selected
+
+    def update_combo_availability(self, changed_combo=None):
+        selected_currencies = self.get_selected_currencies()
+
+        for combo, _ in self.currency_rows:
+            current_data = combo.currentData()
+            combo.blockSignals(True)
+
+            current_index = combo.currentIndex()
+
+            for i in range(combo.count()):
+                item_data = combo.itemData(i)
+                item_enabled = item_data not in selected_currencies or item_data == current_data
+                combo.model().item(i).setEnabled(item_enabled)
+
+
+            if combo != changed_combo and not combo.model().item(current_index).isEnabled():
+                for i in range(combo.count()):
+                    if combo.model().item(i).isEnabled():
+                        combo.setCurrentIndex(i)
+                        break
+
+            combo.blockSignals(False)
+
+    def on_currency_selection_change(self):
+        if self._initializing:
+            return
+
+        changed_combo = self.sender()
+        self.update_combo_availability(changed_combo)
+
+        source_field = self.last_focused_edit or self.currency_rows[0][1]
+        self.on_value_change(source_field)
+
+    def cleanup_leading_zeros(self, text):
+        if not text or text == "0":
+            return "0"
+
+        if '.' in text or ',' in text:
+            if '.' in text:
+                parts = text.split('.')
+                separator = '.'
+            else:
+                parts = text.split(',')
+                separator = ','
+
+            integer_part = parts[0]
+            if integer_part.startswith('0') and len(integer_part) > 1 and integer_part != '0':
+                integer_part = integer_part.lstrip('0')
+                if not integer_part:
+                    integer_part = '0'
+
+            if len(parts) > 1:
+                return integer_part + separator + parts[1]
+            else:
+                return integer_part + separator
+
+        if text.startswith('0') and len(text) > 1:
+            cleaned = text.lstrip('0')
+            return cleaned if cleaned else '0'
+
+        return text
+
     def eventFilter(self, obj, event):
         if event.type() == QEvent.FocusIn and isinstance(obj, QLineEdit):
             self.last_focused_edit = obj
             self.on_value_change(obj)
         return super().eventFilter(obj, event)
 
-    def on_value_change(self, edited_field):
+    def on_value_change(self, edited_field, text=None):
         if self._initializing:
             return
 
-        text = edited_field.text().strip()
-        if text == "":
+        current_text = edited_field.text().strip()
+        cleaned_text = self.cleanup_leading_zeros(current_text)
+
+        if cleaned_text != current_text:
+            cursor_pos = edited_field.cursorPosition()
+            edited_field.blockSignals(True)
+            edited_field.setText(cleaned_text)
+
+            if cursor_pos > len(cleaned_text):
+                cursor_pos = len(cleaned_text)
+            edited_field.setCursorPosition(cursor_pos)
+            edited_field.blockSignals(False)
+            return
+
+        if cleaned_text == "":
             edited_field.setText("0")
             return
 
         try:
-            value = float(edited_field.text())
+            numeric_text = cleaned_text.replace(',', '.')
+            value = float(numeric_text)
         except Exception:
             return
 
@@ -230,7 +322,8 @@ class CurrencyCalculator(QWidget):
                 focused_edit.setText("0")
         elif text == "=":
             try:
-                result = str(eval(current))
+                eval_text = current.replace(',', '.')
+                result = str(eval(eval_text))
                 focused_edit.setText(self.format_number(float(result)))
                 self.on_value_change(focused_edit)
             except Exception:
@@ -280,7 +373,6 @@ class CurrencyCalculator(QWidget):
         else:
             if last_input is not None and last_input != "":
                 prospective = last_input
-
         prospective = prospective or ""
         prospective = prospective.strip()
 
@@ -303,13 +395,13 @@ class CurrencyCalculator(QWidget):
                     self.buttons[op].setEnabled(False)
             return
 
-
         parts = re.split(r"[+\-*/%]", prospective)
         last_number = parts[-1] if parts else ""
 
         if "." in last_number:
             if "." in self.buttons:
                 self.buttons["."].setEnabled(False)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
