@@ -104,6 +104,7 @@ class CurrencyCalculator(QWidget):
             edit.setFixedHeight(60)
             edit.setStyleSheet("font-size: 18pt;")
             edit.setFocusPolicy(Qt.ClickFocus)
+            edit.installEventFilter(self)
 
             edit.textChanged.connect(lambda text, e=edit: self.on_value_change(e, text))
             combo.currentIndexChanged.connect(lambda _, e=edit, c=combo: self.on_currency_change(c, e))
@@ -138,6 +139,9 @@ class CurrencyCalculator(QWidget):
             self.layout.addLayout(hbox)
 
         self.setLayout(self.layout)
+
+        self.update_combo_availability()
+
         self._initializing = False
 
         if self.currency_rows:
@@ -181,11 +185,10 @@ class CurrencyCalculator(QWidget):
 
             for i in range(combo.count()):
                 item_data = combo.itemData(i)
-                item_enabled = item_data not in selected_currencies or item_data == current_data
+                item_enabled = (item_data not in selected_currencies) or (item_data == current_data)
                 combo.model().item(i).setEnabled(item_enabled)
 
-
-            if combo != changed_combo and not combo.model().item(current_index).isEnabled():
+            if not combo.model().item(current_index).isEnabled():
                 for i in range(combo.count()):
                     if combo.model().item(i).isEnabled():
                         combo.setCurrentIndex(i)
@@ -235,7 +238,6 @@ class CurrencyCalculator(QWidget):
     def eventFilter(self, obj, event):
         if event.type() == QEvent.FocusIn and isinstance(obj, QLineEdit):
             self.last_focused_edit = obj
-            self.on_value_change(obj)
         return super().eventFilter(obj, event)
 
     def on_value_change(self, edited_field, text=None):
