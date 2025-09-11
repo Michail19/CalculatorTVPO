@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QEvent
 
-API_KEY = "60673bf6534faf5107032818a95486d0"
+API_KEY = "a012765c9af8561af6bbf793e71336a8"
 API_URL = f"http://api.currencylayer.com/live?access_key={API_KEY}"
 
 CURRENCY_NAMES_RU = {
